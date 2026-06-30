@@ -17,6 +17,7 @@ class Settings:
     openai_api_key: str
     openai_transcribe_model: str
     log_level: str
+    openai_model: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -43,5 +44,8 @@ class Settings:
                 "OPENAI_TRANSCRIBE_MODEL",
                 "gpt-4o-transcribe",
             ).strip(),
+            openai_model=os.getenv("OPENAI_MODEL", "gpt-5.4-mini").strip(),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )
+
+settings = Settings.from_env()

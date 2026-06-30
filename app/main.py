@@ -10,8 +10,7 @@ from app.whatsapp import (
     expected_basic_auth_header,
     iter_incoming_messages,
 )
-
-settings = Settings.from_env()
+from app.agent import run_agent, settings
 
 logging.basicConfig(level=getattr(logging, settings.log_level, logging.INFO))
 logger = logging.getLogger(__name__)
@@ -83,7 +82,7 @@ async def webhook_360dialog(
         try:
             if msg_type == "text":
                 text = message.get("text", "")
-                reply = f"echo: {text}"
+                user_msg = f"{text}"
 
             elif msg_type == "audio":
                 media_id = message.get("media_id", "")
@@ -104,7 +103,7 @@ async def webhook_360dialog(
                     mime_type=mime_type,
                 )
 
-                reply = f"echo: {transcript}"
+                user_msg = f"{transcript}"
 
             else:
                 continue
@@ -116,6 +115,9 @@ async def webhook_360dialog(
                 msg_type,
             )
 
+            result = await run_agent(user_msg)
+
+            reply = result.reply
             result = await wa.send_text(to=sender, body=reply)
 
             sent.append(
