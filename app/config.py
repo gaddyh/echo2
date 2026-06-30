@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,6 +14,8 @@ class Settings:
     webhook_bearer_token: str
     webhook_basic_user: str
     webhook_basic_pass: str
+    openai_api_key: str
+    openai_transcribe_model: str
     log_level: str
 
     @classmethod
@@ -27,10 +30,18 @@ class Settings:
 
         return cls(
             d360_api_key=api_key,
-            d360_api_base_url=os.getenv("D360_API_BASE_URL", "https://waba-v2.360dialog.io").rstrip("/"),
+            d360_api_base_url=os.getenv(
+                "D360_API_BASE_URL",
+                "https://waba-v2.360dialog.io",
+            ).rstrip("/"),
             webhook_auth_mode=auth_mode,
             webhook_bearer_token=os.getenv("WEBHOOK_BEARER_TOKEN", "").strip(),
             webhook_basic_user=os.getenv("WEBHOOK_BASIC_USER", "").strip(),
             webhook_basic_pass=os.getenv("WEBHOOK_BASIC_PASS", "").strip(),
+            openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+            openai_transcribe_model=os.getenv(
+                "OPENAI_TRANSCRIBE_MODEL",
+                "gpt-4o-transcribe",
+            ).strip(),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )

@@ -4,9 +4,15 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Request
 
 from app.config import Settings
-from app.whatsapp import Dialog360Client, expected_basic_auth_header, iter_incoming_text_messages
+from app.transcription import handle_360dialog_audio_message
+from app.whatsapp import (
+    Dialog360Client,
+    expected_basic_auth_header,
+    iter_incoming_messages,
+)
 
 settings = Settings.from_env()
+
 logging.basicConfig(level=getattr(logging, settings.log_level, logging.INFO))
 logger = logging.getLogger(__name__)
 
@@ -25,10 +31,22 @@ def verify_webhook_auth(authorization: str | None) -> None:
         return
 
     if settings.webhook_auth_mode == "basic":
-        expected = expected_basic_auth_header(settings.webhook_basic_user, settings.webhook_basic_pass)
-        if not settings.webhook_basic_user or not settings.webhook_basic_pass or authorization != expected:
+        expected = expected_basic_auth_header(
+            settings.webhook_basic_user,
+            settings.webhook_basic_pass,
+        )
+        if (
+            not settings.webhook_basic_user
+            or not settings.webhook_basic_pass
+            or authorization != expected
+        ):
             raise HTTPException(status_code=401, detail="Unauthorized")
         return
+
+
+@app.get("/")
+async def root() -> dict[str, str]:
+    return {"status": "ok", "service": "360dialog-echo-bot"}
 
 
 @app.get("/health")
@@ -44,10 +62,11 @@ async def webhook_360dialog(
     """
     360dialog webhook endpoint.
 
-    It parses inbound text messages and replies with:
-        echo: <user text>
+    Text message:
+        echo: <text>
 
-    Status callbacks are acknowledged and ignored.
+    Audio/voice message:
+        downloads media -> converts if needed -> transcribes -> echo: <transcript>
     """
     verify_webhook_auth(authorization)
 
@@ -55,13 +74,82 @@ async def webhook_360dialog(
     logger.info("Incoming webhook payload: %s", payload)
 
     sent = []
-    for message in iter_incoming_text_messages(payload):
+
+    for message in iter_incoming_messages(payload):
         sender = message["from"]
-        text = message["text"]
-        reply = f"echo: {text}"
+        message_id = message["id"]
+        msg_type = message["type"]
 
-        logger.info("Echoing message_id=%s from=%s text=%r", message["id"], sender, text)
-        result = await wa.send_text(to=sender, body=reply)
-        sent.append({"to": sender, "message_id": message["id"], "result": result})
+        try:
+            if msg_type == "text":
+                text = message.get("text", "")
+                reply = f"echo: {text}"
 
-    return {"ok": True, "echoed": len(sent), "sent": sent}
+            elif msg_type == "audio":
+                media_id = message.get("media_id", "")
+                mime_type = message.get("mime_type", "")
+
+                if not media_id:
+                    raise ValueError("Missing audio media id")
+
+                await wa.send_text(
+                    to=sender,
+                    body="Transcribing your voice message...",
+                )
+
+                transcript = await handle_360dialog_audio_message(
+                    wa=wa,
+                    settings=settings,
+                    media_id=media_id,
+                    mime_type=mime_type,
+                )
+
+                reply = f"echo: {transcript}"
+
+            else:
+                continue
+
+            logger.info(
+                "Replying message_id=%s from=%s type=%s",
+                message_id,
+                sender,
+                msg_type,
+            )
+
+            result = await wa.send_text(to=sender, body=reply)
+
+            sent.append(
+                {
+                    "to": sender,
+                    "message_id": message_id,
+                    "type": msg_type,
+                    "result": result,
+                }
+            )
+
+        except Exception as exc:
+            logger.exception(
+                "Failed handling message_id=%s type=%s",
+                message_id,
+                msg_type,
+            )
+
+            await wa.send_text(
+                to=sender,
+                body="Sorry, I couldn't process that message.",
+            )
+
+            sent.append(
+                {
+                    "to": sender,
+                    "message_id": message_id,
+                    "type": msg_type,
+                    "error": str(exc),
+                }
+            )
+
+    return {
+        "ok": True,
+        "handled": len(sent),
+        "sent": sent,
+    }

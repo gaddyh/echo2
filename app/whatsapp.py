@@ -1,6 +1,9 @@
 import base64
 import logging
-from typing import Any
+import tempfile
+from pathlib import Path
+from typing import Any, Iterable
+from urllib.parse import urlparse
 
 import httpx
 
@@ -23,14 +26,19 @@ def normalize_phone(phone: str) -> str:
 class Dialog360Client:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.api_base_url = settings.d360_api_base_url
         self.messages_url = f"{settings.d360_api_base_url}/messages"
 
     @property
-    def headers(self) -> dict[str, str]:
+    def json_headers(self) -> dict[str, str]:
         return {
             "D360-API-KEY": self.settings.d360_api_key,
             "Content-Type": "application/json",
         }
+
+    @property
+    def auth_headers(self) -> dict[str, str]:
+        return {"D360-API-KEY": self.settings.d360_api_key}
 
     async def send_text(self, to: str, body: str) -> dict[str, Any]:
         payload = {
@@ -42,7 +50,11 @@ class Dialog360Client:
         }
 
         async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(self.messages_url, headers=self.headers, json=payload)
+            response = await client.post(
+                self.messages_url,
+                headers=self.json_headers,
+                json=payload,
+            )
 
         try:
             response_body: Any = response.json()
@@ -50,16 +62,72 @@ class Dialog360Client:
             response_body = response.text
 
         if response.status_code not in {200, 201}:
-            logger.error("360dialog send failed: status=%s body=%s", response.status_code, response_body)
+            logger.error(
+                "360dialog send failed: status=%s body=%s",
+                response.status_code,
+                response_body,
+            )
             response.raise_for_status()
 
         return response_body
 
+    async def download_media_to_tempfile(
+        self,
+        media_id: str,
+        suffix: str = ".bin",
+    ) -> Path:
+        """
+        360dialog media download flow:
+        1. GET /{media_id} to retrieve the temporary Meta media URL.
+        2. Replace the lookaside.fbsbx.com host with the 360dialog host.
+        3. Download the media with D360-API-KEY.
+        """
+        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+            meta_response = await client.get(
+                f"{self.api_base_url}/{media_id}",
+                headers=self.auth_headers,
+            )
+            meta_response.raise_for_status()
+            meta = meta_response.json()
 
-def iter_incoming_text_messages(payload: dict[str, Any]):
+            media_url = meta.get("url")
+            if not media_url:
+                raise ValueError(f"Missing media url for media_id={media_id}")
+
+            download_url = to_360dialog_media_url(self.api_base_url, media_url)
+
+            file_response = await client.get(
+                download_url,
+                headers=self.auth_headers,
+            )
+            file_response.raise_for_status()
+
+        fd, path_str = tempfile.mkstemp(prefix="wa-media-", suffix=suffix)
+        path = Path(path_str)
+
+        with open(fd, "wb") as f:
+            f.write(file_response.content)
+
+        return path
+
+
+def to_360dialog_media_url(api_base_url: str, original_url: str) -> str:
+    parsed = urlparse(original_url.replace("\\/", "/"))
+
+    path_and_query = parsed.path
+    if parsed.query:
+        path_and_query += f"?{parsed.query}"
+
+    return f"{api_base_url}{path_and_query}"
+
+
+def iter_incoming_messages(payload: dict[str, Any]) -> Iterable[dict[str, Any]]:
     """
-    Yield {from, id, text, name} for every inbound text message in a
-    WhatsApp/360dialog webhook payload.
+    Yield normalized inbound message dicts.
+
+    Supports:
+      - text
+      - audio / voice messages
 
     Status callbacks and unsupported message types are ignored.
     """
@@ -74,19 +142,36 @@ def iter_incoming_text_messages(payload: dict[str, Any]):
             }
 
             for message in value.get("messages", []):
-                if message.get("type") != "text":
-                    continue
-
                 sender = message.get("from", "")
+                msg_type = message.get("type", "")
                 contact = contacts_by_wa_id.get(sender, {})
                 name = contact.get("profile", {}).get("name", "")
 
-                yield {
+                normalized = {
                     "from": sender,
                     "id": message.get("id", ""),
-                    "text": message.get("text", {}).get("body", ""),
+                    "type": msg_type,
                     "name": name,
+                    "raw": message,
                 }
+
+                if msg_type == "text":
+                    normalized["text"] = message.get("text", {}).get("body", "")
+                    yield normalized
+
+                elif msg_type == "audio":
+                    audio = message.get("audio", {}) or {}
+                    normalized["media_id"] = audio.get("id", "")
+                    normalized["mime_type"] = audio.get("mime_type", "")
+                    normalized["voice"] = audio.get("voice", False)
+                    yield normalized
+
+                else:
+                    logger.info(
+                        "Ignoring unsupported message type=%s from=%s",
+                        msg_type,
+                        sender,
+                    )
 
 
 def expected_basic_auth_header(user: str, password: str) -> str:
