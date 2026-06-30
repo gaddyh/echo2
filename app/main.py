@@ -10,6 +10,7 @@ from app.whatsapp import (
     expected_basic_auth_header,
     iter_incoming_messages,
 )
+from app.agent import run_agent
 
 settings = Settings.from_env()
 
@@ -107,7 +108,7 @@ async def process_single_message(message: dict[str, Any]) -> None:
     try:
         if msg_type == "text":
             text = message.get("text", "")
-            reply = f"echo: {text}"
+            user_msg = f"{text}"
 
         elif msg_type == "audio":
             media_id = message.get("media_id", "")
@@ -128,7 +129,7 @@ async def process_single_message(message: dict[str, Any]) -> None:
                 mime_type=mime_type,
             )
 
-            reply = f"echo: {transcript}"
+            user_msg = f"{transcript}"
 
         else:
             logger.info("Ignoring unsupported message type=%s", msg_type)
@@ -141,7 +142,10 @@ async def process_single_message(message: dict[str, Any]) -> None:
             msg_type,
         )
 
-        await wa.send_text(to=sender, body=reply)
+        result = await run_agent(user_msg)
+
+        reply = result.reply
+        result = await wa.send_text(to=sender, body=reply)
 
     except Exception:
         logger.exception(
