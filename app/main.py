@@ -1,7 +1,7 @@
 import logging
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 
 from app.config import Settings
 from app.transcription import handle_360dialog_audio_message
@@ -10,7 +10,8 @@ from app.whatsapp import (
     expected_basic_auth_header,
     iter_incoming_messages,
 )
-from app.agent import run_agent, settings
+
+settings = Settings.from_env()
 
 logging.basicConfig(level=getattr(logging, settings.log_level, logging.INFO))
 logger = logging.getLogger(__name__)
@@ -56,102 +57,103 @@ async def health() -> dict[str, str]:
 @app.post("/webhook/360dialog")
 async def webhook_360dialog(
     request: Request,
+    background_tasks: BackgroundTasks,
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     """
     360dialog webhook endpoint.
 
-    Text message:
-        echo: <text>
-
-    Audio/voice message:
-        downloads media -> converts if needed -> transcribes -> echo: <transcript>
+    Important:
+    Return 200 immediately, then process the WhatsApp message in the background.
     """
     verify_webhook_auth(authorization)
 
     payload = await request.json()
-    logger.info("Incoming webhook payload: %s", payload)
+    logger.info("Accepted 360dialog webhook")
 
-    sent = []
+    background_tasks.add_task(process_webhook_payload, payload)
 
-    for message in iter_incoming_messages(payload):
-        sender = message["from"]
-        message_id = message["id"]
-        msg_type = message["type"]
+    return {
+        "ok": True,
+        "accepted": True,
+    }
+
+
+async def process_webhook_payload(payload: dict[str, Any]) -> None:
+    """
+    Background processing.
+
+    This runs after the HTTP 200 response has already been returned to 360dialog.
+    """
+    try:
+        messages = list(iter_incoming_messages(payload))
+
+        if not messages:
+            logger.info("Webhook had no incoming messages to handle")
+            return
+
+        for message in messages:
+            await process_single_message(message)
+
+    except Exception:
+        logger.exception("Failed processing webhook payload")
+
+
+async def process_single_message(message: dict[str, Any]) -> None:
+    sender = message["from"]
+    message_id = message.get("id", "")
+    msg_type = message.get("type", "")
+
+    try:
+        if msg_type == "text":
+            text = message.get("text", "")
+            reply = f"echo: {text}"
+
+        elif msg_type == "audio":
+            media_id = message.get("media_id", "")
+            mime_type = message.get("mime_type", "")
+
+            if not media_id:
+                raise ValueError("Missing audio media id")
+
+            await wa.send_text(
+                to=sender,
+                body="Transcribing your voice message...",
+            )
+
+            transcript = await handle_360dialog_audio_message(
+                wa=wa,
+                settings=settings,
+                media_id=media_id,
+                mime_type=mime_type,
+            )
+
+            reply = f"echo: {transcript}"
+
+        else:
+            logger.info("Ignoring unsupported message type=%s", msg_type)
+            return
+
+        logger.info(
+            "Replying to message_id=%s from=%s type=%s",
+            message_id,
+            sender,
+            msg_type,
+        )
+
+        await wa.send_text(to=sender, body=reply)
+
+    except Exception:
+        logger.exception(
+            "Failed handling message_id=%s type=%s",
+            message_id,
+            msg_type,
+        )
 
         try:
-            if msg_type == "text":
-                text = message.get("text", "")
-                user_msg = f"{text}"
-
-            elif msg_type == "audio":
-                media_id = message.get("media_id", "")
-                mime_type = message.get("mime_type", "")
-
-                if not media_id:
-                    raise ValueError("Missing audio media id")
-
-                await wa.send_text(
-                    to=sender,
-                    body="Transcribing your voice message...",
-                )
-
-                transcript = await handle_360dialog_audio_message(
-                    wa=wa,
-                    settings=settings,
-                    media_id=media_id,
-                    mime_type=mime_type,
-                )
-
-                user_msg = f"{transcript}"
-
-            else:
-                continue
-
-            logger.info(
-                "Replying message_id=%s from=%s type=%s",
-                message_id,
-                sender,
-                msg_type,
-            )
-
-            result = await run_agent(user_msg)
-
-            reply = result.reply
-            result = await wa.send_text(to=sender, body=reply)
-
-            sent.append(
-                {
-                    "to": sender,
-                    "message_id": message_id,
-                    "type": msg_type,
-                    "result": result,
-                }
-            )
-
-        except Exception as exc:
-            logger.exception(
-                "Failed handling message_id=%s type=%s",
-                message_id,
-                msg_type,
-            )
-
             await wa.send_text(
                 to=sender,
                 body="Sorry, I couldn't process that message.",
             )
-
-            sent.append(
-                {
-                    "to": sender,
-                    "message_id": message_id,
-                    "type": msg_type,
-                    "error": str(exc),
-                }
-            )
-
-    return {
-        "ok": True,
-        "handled": len(sent),
-        "sent": sent,
-    }
+        except Exception:
+            logger.exception("Failed sending error message to user")
