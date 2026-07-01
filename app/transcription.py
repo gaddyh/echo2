@@ -4,9 +4,12 @@ from pathlib import Path
 
 import httpx
 from openai import AsyncOpenAI
+from langsmith.wrappers import wrap_openai
 
-from app.config import Settings
+from app.config import Settings, settings
 from app.whatsapp import Dialog360Client
+
+_openai = wrap_openai(AsyncOpenAI(api_key=settings.openai_api_key))
 
 SUPPORTED_TRANSCRIPTION_EXTS = {
     ".mp3",
@@ -126,10 +129,8 @@ def ensure_transcribable_audio(path: Path) -> Path:
 
 
 async def transcribe_audio(settings: Settings, path: Path) -> str:
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
-
     with path.open("rb") as audio_file:
-        transcription = await client.audio.transcriptions.create(
+        transcription = await _openai.audio.transcriptions.create(
             model=settings.openai_transcribe_model,
             file=audio_file,
         )

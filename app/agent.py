@@ -1,9 +1,12 @@
 from openai import AsyncOpenAI
+from langsmith import traceable
+from langsmith.wrappers import wrap_openai
 
 from app.config import settings
+from app.memory import memory_store
 from app.schema import AgentResponse
 
-client = AsyncOpenAI(api_key=settings.openai_api_key)
+client = wrap_openai(AsyncOpenAI(api_key=settings.openai_api_key))
 
 
 SYSTEM_PROMPT = """
@@ -17,20 +20,26 @@ Return ONLY the structured response.
 """
 
 
-async def run_agent(user_message: str) -> AgentResponse:
+@traceable(name="run_agent")
+async def run_agent(user_message: str, thread_id: str = "") -> AgentResponse:
+    history = memory_store.get(thread_id) if thread_id else []
+
+    input_messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        *history,
+        {"role": "user", "content": user_message},
+    ]
+
     response = await client.responses.parse(
         model=settings.openai_model,
-        input=[
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT,
-            },
-            {
-                "role": "user",
-                "content": user_message,
-            },
-        ],
+        input=input_messages,
         text_format=AgentResponse,
     )
 
-    return response.output_parsed
+    result = response.output_parsed
+
+    if thread_id and result:
+        memory_store.append(thread_id, "user", user_message)
+        memory_store.append(thread_id, "assistant", result.reply)
+
+    return result

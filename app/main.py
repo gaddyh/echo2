@@ -3,7 +3,7 @@ from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 
-from app.config import Settings
+from app.config import settings
 from app.transcription import handle_360dialog_audio_message
 from app.whatsapp import (
     Dialog360Client,
@@ -11,8 +11,6 @@ from app.whatsapp import (
     iter_incoming_messages,
 )
 from app.agent import run_agent
-
-settings = Settings.from_env()
 
 logging.basicConfig(level=getattr(logging, settings.log_level, logging.INFO))
 logger = logging.getLogger(__name__)
@@ -107,8 +105,7 @@ async def process_single_message(message: dict[str, Any]) -> None:
 
     try:
         if msg_type == "text":
-            text = message.get("text", "")
-            user_msg = f"{text}"
+            user_msg = message.get("text", "")
 
             await wa.send_typing_indicator(message_id)
 
@@ -121,14 +118,12 @@ async def process_single_message(message: dict[str, Any]) -> None:
 
             await wa.send_typing_indicator(message_id)
 
-            transcript = await handle_360dialog_audio_message(
+            user_msg = await handle_360dialog_audio_message(
                 wa=wa,
                 settings=settings,
                 media_id=media_id,
                 mime_type=mime_type,
             )
-
-            user_msg = f"{transcript}"
 
         else:
             logger.info("Ignoring unsupported message type=%s", msg_type)
@@ -141,7 +136,7 @@ async def process_single_message(message: dict[str, Any]) -> None:
             msg_type,
         )
 
-        result = await run_agent(user_msg)
+        result = await run_agent(user_msg, thread_id=sender)
 
         reply = result.reply
         result = await wa.send_text(to=sender, body=reply)

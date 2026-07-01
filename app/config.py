@@ -18,6 +18,10 @@ class Settings:
     openai_transcribe_model: str
     log_level: str
     openai_model: str
+    langsmith_api_key: str
+    langsmith_project: str
+    langsmith_tracing: bool
+    conversation_max_messages: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -46,6 +50,10 @@ class Settings:
             ).strip(),
             openai_model=os.getenv("OPENAI_MODEL", "gpt-5.4-mini").strip(),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+            langsmith_api_key=os.getenv("LANGCHAIN_API_KEY", "").strip(),
+            langsmith_project=os.getenv("LANGCHAIN_PROJECT", "echo2").strip(),
+            langsmith_tracing=os.getenv("LANGCHAIN_TRACING_V2", "false").strip().lower() == "true",
+            conversation_max_messages=int(os.getenv("CONVERSATION_MAX_MESSAGES", "20")),
         )
 
 settings = Settings.from_env()
