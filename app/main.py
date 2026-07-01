@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="360dialog Echo Bot")
 wa = Dialog360Client(settings)
 
+_seen_message_ids: set[str] = set()
+
 
 def verify_webhook_auth(authorization: str | None) -> None:
     if settings.webhook_auth_mode == "none":
@@ -102,6 +104,12 @@ async def process_single_message(message: dict[str, Any]) -> None:
     sender = message["from"]
     message_id = message.get("id", "")
     msg_type = message.get("type", "")
+
+    if message_id and message_id in _seen_message_ids:
+        logger.info("Skipping duplicate message_id=%s", message_id)
+        return
+    if message_id:
+        _seen_message_ids.add(message_id)
 
     try:
         if msg_type == "text":
