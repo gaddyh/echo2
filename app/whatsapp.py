@@ -71,6 +71,47 @@ class Dialog360Client:
 
         return response_body
 
+    async def send_typing_indicator(self, incoming_message_id: str) -> dict[str, Any]:
+        """
+        Show WhatsApp typing indicator.
+
+        Requires the incoming webhook message id, usually starts with 'wamid.'.
+        This also marks the incoming message as read.
+        """
+        if not incoming_message_id:
+            raise ValueError("Missing incoming_message_id")
+
+        payload = {
+            "messaging_product": "whatsapp",
+            "status": "read",
+            "message_id": incoming_message_id,
+            "typing_indicator": {
+                "type": "text",
+            },
+        }
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                self.messages_url,
+                headers=self.json_headers,
+                json=payload,
+            )
+
+        try:
+            response_body: Any = response.json()
+        except Exception:
+            response_body = response.text
+
+        if response.status_code not in {200, 201}:
+            logger.error(
+                "360dialog typing indicator failed: status=%s body=%s",
+                response.status_code,
+                response_body,
+            )
+            response.raise_for_status()
+
+        return response_body
+
     async def download_media_to_tempfile(
         self,
         media_id: str,

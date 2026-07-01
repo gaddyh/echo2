@@ -110,6 +110,8 @@ async def process_single_message(message: dict[str, Any]) -> None:
             text = message.get("text", "")
             user_msg = f"{text}"
 
+            await wa.send_typing_indicator(message_id)
+
         elif msg_type == "audio":
             media_id = message.get("media_id", "")
             mime_type = message.get("mime_type", "")
@@ -117,10 +119,7 @@ async def process_single_message(message: dict[str, Any]) -> None:
             if not media_id:
                 raise ValueError("Missing audio media id")
 
-            await wa.send_text(
-                to=sender,
-                body="Transcribing your voice message...",
-            )
+            await wa.send_typing_indicator(message_id)
 
             transcript = await handle_360dialog_audio_message(
                 wa=wa,
